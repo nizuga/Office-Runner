@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Backup/zip pesado, no pertenece al repo
+Proyecto final/
+Proyecto final.zip
+
+# Datos sensibles - nunca deben subirse
+github-recovery-codes.txt

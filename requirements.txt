@@ -1,0 +1,9 @@
+# Dependencias del proyecto completo (Persona B: juego + Persona A: camara).
+# Un solo interprete para las dos mitades: Python 3.11 (el del venv compartido;
+# NO 3.13 -> MediaPipe no tiene wheel). mediapipe 0.10.21 SI tiene wheel cp311.
+pygame==2.6.1
+
+# --- Vision (Persona A): camara + pose ---
+opencv-python==4.11.0.86
+mediapipe==0.10.21
+numpy==1.26.4
