@@ -14,7 +14,7 @@ from enum import Enum, auto
 
 import pygame
 
-from game import config, render
+from game import assets, config, render
 from game.boss import Boss
 from game.chaser import Chaser
 from game.keyboard_controller import KeyboardController
@@ -63,6 +63,9 @@ class Game:
         self.canvas = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
         pygame.display.set_caption(config.CAPTION)
         self.clock = pygame.time.Clock()
+        # Todos los PNG se convierten/cachean una vez, despues de crear display.
+        # Si falta alguno, render.py conserva su fallback procedural.
+        assets.preload()
 
         # Fuente del ControllerState inyectable (teclado por defecto, cámara
         # opcional). Ambas exponen handle_event + get_state: el juego no distingue.
@@ -70,6 +73,7 @@ class Game:
         self.state = GameState.INTRO
         # Frames restantes de la pantalla de onboarding (reglas + ubicación).
         self._intro_frames_left = config.INTRO_SECONDS * config.FPS
+        self._transition_frames: int = 0
         self.running = True
         self._reset_run()
 
@@ -153,6 +157,7 @@ class Game:
     # --- Actualización por estado ---
 
     def _update(self, state, events) -> None:
+        previous_state = self.state
         if self.state == GameState.INTRO:
             # Pantalla de reglas + tiempo para ubicarse frente a la cámara. Se
             # cuenta hacia atrás; cualquier tecla la salta.
@@ -202,6 +207,11 @@ class Game:
             if restart_key or state.jump:
                 self._reset_run()
                 self.state = GameState.RUNNING
+
+        if self.state is not previous_state:
+            self._transition_frames = config.TRANSITION_FRAMES
+        else:
+            self._transition_frames = max(0, self._transition_frames - 1)
 
     def _update_running(self, state) -> None:
         # Movimiento del jugador.
@@ -289,7 +299,7 @@ class Game:
         # Todo el juego se dibuja al LIENZO (self.canvas); la composición con el
         # panel de cámara la hace run(). render.py sigue viendo un 540×900 normal.
         if self.state == GameState.INTRO:
-            render.draw_ground(self.canvas, config.SPEED_START, jump_cue=False)
+            render.draw_static_background(self.canvas, "intro")
             secs = self._intro_frames_left // config.FPS + 1
             render.draw_intro(self.canvas, secs)
         elif self.state == GameState.CALIBRATING:
@@ -303,7 +313,7 @@ class Game:
             render.draw_boss_fight(self.canvas, self, state)
             self._draw_center_text("¡Venciste al jefe!", "Brazos arriba o una tecla")
         elif self.state == GameState.WATER_BREAK:
-            render.draw_ground(self.canvas, 0.0, jump_cue=False)
+            render.draw_static_background(self.canvas, "water_break")
             # El jefe vencido se retira hacia la SALIDA antes de asentarse la escena.
             if self.boss_exit > 0:
                 t = 1.0 - self.boss_exit / config.BOSS_EXIT_FRAMES
@@ -314,6 +324,8 @@ class Game:
         elif self.state == GameState.GAME_OVER:
             render.draw_running(self.canvas, self, state)
             self._draw_center_text("¡Te alcanzó el PDF!", "Brazos arriba o R: reiniciar")
+
+        render.draw_transition(self.canvas, self._transition_frames)
 
     def _draw_center_text(self, title: str, subtitle: str,
                           hint: str | None = None) -> None:

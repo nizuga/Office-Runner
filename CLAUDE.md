@@ -32,7 +32,7 @@ No hay framework de tests aún. La lógica se valida con scripts headless usando
 `SDL_VIDEODRIVER=dummy` (+ `pygame.display.set_mode` para render) para instanciar pygame sin
 ventana: se ejercitan el evento de salto de un frame, el clamp de carriles, la colisión JUMP/DODGE
 (incluido el invariante "DODGE no saltable"), el tope/fijeza de velocidad, los invariantes de
-`project()` (convergencia en el horizonte, no-linealidad, escala>0) y un run completo con render.
+`project()` (estrechamiento de carriles, no-linealidad, escala>0) y un run completo con render.
 Para inspección visual, `pygame.image.save(screen, ...)` a PNG bajo el driver dummy.
 
 ## Arquitectura
@@ -135,7 +135,7 @@ SysFont por frame costaba FPS) y el nombre viene de `config.FONT_NAMES`, una lis
 multiplataforma (Consolas solo existe en Windows; en macOS cae a Menlo/Monaco). **Regla:** al
 cambiar gameplay, no tocar render.py; al cambiar la vista, no
 tocar la lógica de colisión/spawn/velocidad. Las constantes de perspectiva (`HORIZON_Y`,
-`VANISHING_X`, `GROUND_Y`, `DEPTH_EXP`, `SCALE_MAX/MIN`, `LANE_SPREAD`) están agrupadas arriba
+`VANISHING_X`, `GROUND_Y`, `DEPTH_EXP`, `SCALE_MAX/MIN`, `LANE_SPREAD_FAR/NEAR`) están agrupadas arriba
 de render.py.
 
 **La ventana se compone: panel de cámara (izq) + juego (der).** El juego se dibuja SIEMPRE a un

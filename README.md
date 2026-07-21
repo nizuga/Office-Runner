@@ -28,6 +28,26 @@ propio video) y un módulo de **juego** (loop, render en perspectiva, colisiones
 perseguidor y jefe). El panel izquierdo muestra tu cámara con el esqueleto
 detectado y las pistas de acción (¡SALTA!, ¡MUÉVETE!); el derecho, el juego.
 
+## Renovación visual
+
+Esta versión reemplaza el arte procedural por un paquete original de **pixel art
+moderno**, manteniendo intactas la perspectiva pseudo-3D, la cámara, las
+colisiones y la lógica del juego.
+
+- Ciclo de carrera de **seis cuadros**: contacto, apoyo e impulso con ambas
+  piernas, sincronizado con la velocidad del suelo.
+- Sprites transparentes para el jugador, jefe, silla, cajas y PDF perseguidor.
+- Fondos ilustrados para introducción, oficina y pausa de agua.
+- Carriles proyectados por el motor para conservar su alineación a cualquier
+  profundidad.
+- Cargador central con caché, escalado *nearest-neighbor* y dibujos
+  procedurales como respaldo cuando falta un PNG.
+- Partículas de movimiento, destellos de impacto y transiciones entre estados.
+- Previsualizaciones automáticas de todos los estados, incluida una animación
+  del ciclo de carrera.
+
+![Ciclo de carrera de seis cuadros](output/previews/10_run_animation.gif)
+
 ## Requisitos
 
 - **Python 3.11** (obligatorio: MediaPipe no tiene wheel para 3.13).
@@ -104,3 +124,31 @@ python3.11 -m venv .venv
 | 1..5 (mantener) | Sostener cada estiramiento del jefe |
 | R | Reiniciar tras el game over |
 | Esc | Salir |
+
+## Arte y previsualizaciones
+
+El juego incluye un paquete original de pixel art en `assets/`. Los sprites y
+fondos se cargan una sola vez al iniciar; si falta un PNG, el render conserva su
+dibujo procedural como respaldo.
+
+Para exportar una galería de todos los estados sin abrir una ventana ni usar la
+webcam:
+
+```bash
+python tools/render_previews.py
+```
+
+Las diez vistas se guardan en `output/previews/`; incluyen un GIF del ciclo,
+una comparación de sus seis cuadros y un diagnóstico de los tres carriles. Para
+reconstruir los PNG finales desde las fuentes generadas (requiere Pillow):
+
+```bash
+python -m pip install Pillow
+python tools/build_visual_assets.py
+```
+
+Pruebas visuales y de flujo:
+
+```bash
+python -m unittest discover -s tests -v
+```

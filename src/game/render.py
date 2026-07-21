@@ -19,6 +19,7 @@ import math
 
 import pygame
 
+from game import assets as visual_assets
 from game import config
 
 # ============================================================================
@@ -40,9 +41,10 @@ DEPTH_EXP: float = 2.4
 SCALE_MAX: float = 1.20    # escala en el frente (z=1)
 SCALE_MIN: float = 0.045   # escala en el horizonte (z=0), pequeña pero > 0
 
-# Separación horizontal (px) entre un carril y el centro EN EL FRENTE, antes de
-# multiplicar por la escala. Controla qué tan abiertos se ven los carriles cerca.
-LANE_SPREAD: float = 165.0
+# Separación entre centros de carril, independiente del tamaño del sprite. El
+# fondo ilustrado conserva pasillo visible lejos, aunque los objetos sean pequeños.
+LANE_SPREAD_FAR: float = 50.0
+LANE_SPREAD_NEAR: float = 198.0
 
 # Rieles transversales que corren hacia el jugador (dan sensación de avance).
 STRIPE_COUNT: int = 16
@@ -76,7 +78,8 @@ PLAYER_DRAW_LIFT: float = 46.0
 PLAYER_ART_W: float = 92.0
 PLAYER_ART_H: float = 146.0
 # Velocidad del ciclo de carrera: fracción de ciclo por unidad de `speed`.
-RUN_CYCLE_SPEED: float = 0.012
+RUN_CYCLE_SPEED: float = 0.0065
+RUN_FRAME_COUNT: int = 6
 
 # Mamparas de cubículo a los lados. El offset se mide en carriles desde el
 # centro: la pista llega a ±1.5, así que 1.9 las deja justo por fuera.
@@ -97,7 +100,11 @@ BOSS_BOB_SPEED: float = 0.06
 
 # Llaves cuyos maestros son arte pixel: se re-escalan con nearest (transform.scale)
 # en vez de smoothscale, para conservar el look chunky sin difuminar.
-_PIXEL_KEYS: set[str] = {"jump", "dodge", "player_run_a", "player_run_b", "player_air"}
+_PIXEL_KEYS: set[str] = {
+    "jump", "dodge", "pdf", "boss",
+    "player_run_a", "player_run_b", "player_air",
+    *(f"player_run_{index}" for index in range(RUN_FRAME_COUNT)),
+}
 
 # Supersampling de los sprites maestros: se dibujan a alta resolución una vez y
 # se re-escalan SIEMPRE desde el maestro con smoothscale (checklist #7), nunca
@@ -109,6 +116,8 @@ _run_phase: float = 0.0  # fase del ciclo de carrera (estado SOLO de render)
 _boss_bob: float = 0.0  # fase del balanceo del jefe (estado SOLO de render)
 _jump_cue_surf: pygame.Surface | None = None  # franja-clave de salto (cacheada)
 _flash_surf: pygame.Surface | None = None      # overlay rojo de error (cacheado)
+_vignette_surf: pygame.Surface | None = None   # marco atmosferico cacheado
+_track_overlay_surf: pygame.Surface | None = None  # carriles exactos sobre fondo IA
 _fonts: dict[tuple[int, bool], pygame.font.Font] = {}  # cache de fuentes (ver _font)
 
 
@@ -128,7 +137,7 @@ def _font(size: int, bold: bool = False) -> pygame.font.Font:
 def project(lane: float, z: float) -> tuple[float, float, float]:
     """Convierte (carril, profundidad) -> (screen_x, screen_y, scale).
 
-    - z=0 (horizonte): todos los carriles colapsan al punto de fuga (#2).
+    - z=0 (horizonte): los carriles se estrechan sin colapsar antes que el fondo.
     - z=1 (frente): carriles bien separados.
     - screen_y sigue una curva no lineal (#3) => aceleración al acercarse.
     - scale nunca es <= 0 (#6).
@@ -138,9 +147,10 @@ def project(lane: float, z: float) -> tuple[float, float, float]:
     scale = SCALE_MIN + (SCALE_MAX - SCALE_MIN) * t      # escala clamped > 0 (#6)
     screen_y = HORIZON_Y + (GROUND_Y - HORIZON_Y) * t
     center = (config.LANE_COUNT - 1) / 2.0
-    # El offset horizontal se multiplica por la escala: en el horizonte la escala
-    # es ~0, así que los carriles convergen al punto de fuga (#2).
-    screen_x = VANISHING_X + (lane - center) * LANE_SPREAD * scale
+    # La separación lateral sigue al pasillo del fondo; el tamaño del sprite usa
+    # `scale` por separado para que ambas perspectivas no se desincronicen.
+    lane_spread = LANE_SPREAD_FAR + (LANE_SPREAD_NEAR - LANE_SPREAD_FAR) * t
+    screen_x = VANISHING_X + (lane - center) * lane_spread
     return screen_x, screen_y, scale
 
 
@@ -468,13 +478,23 @@ def _ensure_masters() -> None:
     if _masters:
         return
     ow = config.obstacle_width()
-    _masters["boss"] = _make_boss_master(BOSS_W, BOSS_H)
-    _masters["player_run_a"] = _make_employee_master(config.COLOR_PLAYER, "run_a")
-    _masters["player_run_b"] = _make_employee_master(config.COLOR_PLAYER, "run_b")
-    _masters["player_air"] = _make_employee_master(config.COLOR_PLAYER_AIR, "air")
-    _masters["jump"] = _make_box_master(ow, config.OBSTACLE_JUMP_HEIGHT)
-    _masters["dodge"] = _make_chair_master(ow, config.OBSTACLE_DODGE_HEIGHT)
-    _masters["pdf"] = _make_master(ow * 1.15, 96, config.COLOR_CHASER, label="PDF")
+    fallbacks = {
+        "boss": lambda: _make_boss_master(BOSS_W, BOSS_H),
+        "player_run_0": lambda: _make_employee_master(config.COLOR_PLAYER, "run_a"),
+        "player_run_1": lambda: _make_employee_master(config.COLOR_PLAYER, "run_a"),
+        "player_run_2": lambda: _make_employee_master(config.COLOR_PLAYER, "run_a"),
+        "player_run_3": lambda: _make_employee_master(config.COLOR_PLAYER, "run_b"),
+        "player_run_4": lambda: _make_employee_master(config.COLOR_PLAYER, "run_b"),
+        "player_run_5": lambda: _make_employee_master(config.COLOR_PLAYER, "run_b"),
+        "player_run_a": lambda: _make_employee_master(config.COLOR_PLAYER, "run_a"),
+        "player_run_b": lambda: _make_employee_master(config.COLOR_PLAYER, "run_b"),
+        "player_air": lambda: _make_employee_master(config.COLOR_PLAYER_AIR, "air"),
+        "jump": lambda: _make_box_master(ow, config.OBSTACLE_JUMP_HEIGHT),
+        "dodge": lambda: _make_chair_master(ow, config.OBSTACLE_DODGE_HEIGHT),
+        "pdf": lambda: _make_master(ow * 1.15, 96, config.COLOR_CHASER, label="PDF"),
+    }
+    for key, fallback in fallbacks.items():
+        _masters[key] = visual_assets.load_sprite(key) or fallback()
 
 
 def _draw_contact_shadow(surface, cx: float, ground_y: float, w: float, risen: float) -> None:
@@ -493,7 +513,8 @@ def _draw_contact_shadow(surface, cx: float, ground_y: float, w: float, risen: f
 
 
 def draw_sprite(surface, key: str, lane: float, z: float, *,
-                y_lift: float = 0.0, rest_lift: float = 0.0, shadow: bool = True) -> None:
+                y_lift: float = 0.0, rest_lift: float = 0.0, shadow: bool = True,
+                x_shift: float = 0.0, y_scale: float = 1.0) -> None:
     """Dibuja un sprite anclado por su BORDE INFERIOR-CENTRO al suelo (#4).
 
     y_lift: desplazamiento vertical total (px de mundo), se escala por la
@@ -505,9 +526,10 @@ def draw_sprite(surface, key: str, lane: float, z: float, *,
     _ensure_masters()
     master, bw, bh = _masters[key]
     sx, ground_y, scale = project(lane, z)
+    sx += x_shift * scale
     sy = ground_y - y_lift * scale
     w = max(1, int(bw * scale))
-    h = max(1, int(bh * scale))
+    h = max(1, int(bh * scale * y_scale))
     # Sombra bajo los pies (altura de reposo); se achica con el salto real.
     if shadow:
         foot_y = ground_y - rest_lift * scale
@@ -523,6 +545,17 @@ def draw_sprite(surface, key: str, lane: float, z: float, *,
 
 
 # --- Suelo / carriles ---
+
+def draw_static_background(surface, key: str) -> None:
+    """Fondo ilustrado exacto 540x900, con fallback al escenario procedural."""
+    background = visual_assets.load_background(key)
+    if background is None:
+        draw_ground(surface, 0.0, jump_cue=False)
+        return
+    if background.get_size() == surface.get_size():
+        surface.blit(background, (0, 0))
+    else:
+        surface.blit(pygame.transform.smoothscale(background, surface.get_size()), (0, 0))
 
 def _draw_back_wall(surface) -> None:
     """Pared de oficina sobre el horizonte (donde aparece el jefe).
@@ -584,6 +617,35 @@ def _edge_line(surface, edge: float, color, width: int) -> None:
     pygame.draw.line(surface, color, (x0, y0), (x1, y1), width)
 
 
+def _get_illustrated_track_overlay() -> pygame.Surface:
+    """Pista alineada con project(); atenua las lineas imperfectas del fondo IA."""
+    global _track_overlay_surf
+    if _track_overlay_surf is not None:
+        return _track_overlay_surf
+
+    overlay = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+    lane_colors = ((9, 28, 54, 58), (12, 34, 64, 42), (9, 28, 54, 58))
+    for lane in range(config.LANE_COUNT):
+        left = lane - 0.5
+        right = lane + 0.5
+        polygon = [
+            project(left, 0.0)[:2], project(right, 0.0)[:2],
+            project(right, 1.0)[:2], project(left, 1.0)[:2],
+        ]
+        pygame.draw.polygon(overlay, lane_colors[lane], polygon)
+
+    line_color = (125, 151, 184, 150)
+    edge_color = (76, 104, 141, 135)
+    for edge in (0.5, 1.5):
+        pygame.draw.line(overlay, line_color, project(edge, 0.0)[:2],
+                         project(edge, 1.0)[:2], 2)
+    for edge in (-0.5, 2.5):
+        pygame.draw.line(overlay, edge_color, project(edge, 0.0)[:2],
+                         project(edge, 1.0)[:2], 3)
+    _track_overlay_surf = overlay
+    return overlay
+
+
 def _get_jump_cue_surf() -> pygame.Surface:
     """Superficie translúcida con la franja-clave de salto (se calcula una vez)."""
     global _jump_cue_surf
@@ -611,9 +673,15 @@ def draw_ground(surface, speed: float, *, jump_cue: bool = True) -> None:
     """
     global _scroll
 
-    # Piso base (lo que queda fuera de la pista) y pared del fondo.
-    surface.fill(config.COLOR_BG)
-    _draw_back_wall(surface)
+    # El PNG conserva la perspectiva y el arte de oficina. Todo este bloque
+    # procedural queda activo como fallback si el asset no esta disponible.
+    background = visual_assets.load_background("office")
+    illustrated = background is not None
+    if illustrated:
+        surface.blit(background, (0, 0))
+    else:
+        surface.fill(config.COLOR_BG)
+        _draw_back_wall(surface)
 
     # Pista como trapecio (bordes exteriores de los carriles).
     left, right = -0.5, config.LANE_COUNT - 0.5
@@ -621,8 +689,11 @@ def draw_ground(surface, speed: float, *, jump_cue: bool = True) -> None:
     tr_x, tr_y, _ = project(right, 0.0)
     bl_x, bl_y, _ = project(left, 1.0)
     br_x, br_y, _ = project(right, 1.0)
-    pygame.draw.polygon(surface, config.COLOR_TRACK,
-                        [(tl_x, tl_y), (tr_x, tr_y), (br_x, br_y), (bl_x, bl_y)])
+    if not illustrated:
+        pygame.draw.polygon(surface, config.COLOR_TRACK,
+                            [(tl_x, tl_y), (tr_x, tr_y), (br_x, br_y), (bl_x, bl_y)])
+    else:
+        surface.blit(_get_illustrated_track_overlay(), (0, 0))
 
     # Rieles transversales que corren hacia el jugador (sensación de avance).
     _scroll = (_scroll + speed * STRIPE_SPEED) % 1.0
@@ -630,19 +701,25 @@ def draw_ground(surface, speed: float, *, jump_cue: bool = True) -> None:
         z = ((k + _scroll) / STRIPE_COUNT)
         lx, ly, _ = project(left, z)
         rx, ry, _ = project(right, z)
-        shade = 44 if (k % 2 == 0) else 30
-        pygame.draw.line(surface, (shade, shade + 3, shade + 8), (lx, ly), (rx, ry), 1)
+        if illustrated:
+            color = (52, 72, 101) if (k % 2 == 0) else (35, 51, 76)
+        else:
+            shade = 44 if (k % 2 == 0) else 30
+            color = (shade, shade + 3, shade + 8)
+        pygame.draw.line(surface, color, (lx, ly), (rx, ry), 1)
 
     # Mamparas de cubículo a ambos lados (después de `_scroll`, van sincronizadas).
     center = (config.LANE_COUNT - 1) / 2.0
-    _draw_cubicle_side(surface, center - WALL_LANE_OFFSET)
-    _draw_cubicle_side(surface, center + WALL_LANE_OFFSET)
+    if not illustrated:
+        _draw_cubicle_side(surface, center - WALL_LANE_OFFSET)
+        _draw_cubicle_side(surface, center + WALL_LANE_OFFSET)
 
-    # Líneas divisorias / bordes de carril (convergen al punto de fuga).
-    for e in (0.5, config.LANE_COUNT - 1.5):
-        _edge_line(surface, e, config.COLOR_LANE_LINE, 2)
-    _edge_line(surface, left, config.COLOR_LANE_LINE, 3)
-    _edge_line(surface, right, config.COLOR_LANE_LINE, 3)
+    # Líneas divisorias / bordes de carril (siguen la perspectiva calibrada).
+    if not illustrated:
+        for e in (0.5, config.LANE_COUNT - 1.5):
+            _edge_line(surface, e, config.COLOR_LANE_LINE, 2)
+        _edge_line(surface, left, config.COLOR_LANE_LINE, 3)
+        _edge_line(surface, right, config.COLOR_LANE_LINE, 3)
 
     # Franja-clave de salto encima del piso (clave visual de "salta aquí").
     if jump_cue:
@@ -661,17 +738,10 @@ def _draw_jump_bar(surface, z: float) -> None:
     bar_h = max(4, int(config.OBSTACLE_JUMP_HEIGHT * scale))
     left, width = int(xL), max(4, int(xR - xL))
     top = int(ground_y - bar_h)
-    rect = pygame.Rect(left, top, width, bar_h)
-    radius = max(2, bar_h // 3)
-
-    color = config.COLOR_OBSTACLE_JUMP
-    pygame.draw.rect(surface, color, rect, border_radius=radius)
-    # Banda de brillo superior (volumen) + contorno oscuro (separa del piso).
-    hi = tuple(min(255, c + 34) for c in color)
-    pygame.draw.rect(surface, hi, (left, top, width, max(2, int(bar_h * 0.35))),
-                     border_radius=radius)
-    dark = tuple(int(c * 0.5) for c in color)
-    pygame.draw.rect(surface, dark, rect, width=max(1, int(scale) + 1), border_radius=radius)
+    _ensure_masters()
+    master, _bw, _bh = _masters["jump"]
+    img = pygame.transform.scale(master, (width, bar_h))
+    surface.blit(img, (left, top))
 
 
 def _draw_jump_chevron(surface, lane: float, z: float) -> None:
@@ -700,7 +770,38 @@ def _player_key(player) -> str:
     """Pose del jugador: en el aire, o el paso que toque del ciclo de carrera."""
     if player.in_air:
         return "player_air"
-    return "player_run_a" if _run_phase < 0.5 else "player_run_b"
+    frame = min(RUN_FRAME_COUNT - 1, int(_run_phase * RUN_FRAME_COUNT))
+    return f"player_run_{frame}"
+
+
+def _draw_runner_dust(surface, game) -> None:
+    """Particulas pixel bajo los pies; decorativas y deterministas."""
+    if game.speed <= 0 or game.player.in_air:
+        return
+    cx, ground_y, _ = project(lane_of_player(game.player), 1.0)
+    phase = int(_run_phase * 12)
+    colors = ((206, 220, 232), (128, 154, 180), (82, 105, 134))
+    for i in range(7):
+        age = (phase + i * 3) % 12
+        side = -1 if i % 2 == 0 else 1
+        x = int(cx + side * (12 + age * 2.4))
+        y = int(ground_y + 12 - age * 1.8)
+        size = max(1, 4 - age // 4)
+        pygame.draw.rect(surface, colors[i % len(colors)], (x, y, size, size))
+
+
+def _get_vignette() -> pygame.Surface:
+    global _vignette_surf
+    if _vignette_surf is None:
+        vignette = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+        for i in range(18):
+            alpha = max(1, 4 - i // 5)
+            pygame.draw.rect(
+                vignette, (4, 8, 18, alpha * 6),
+                (i, i, config.SCREEN_WIDTH - i * 2, config.SCREEN_HEIGHT - i * 2), width=1,
+            )
+        _vignette_surf = vignette
+    return _vignette_surf
 
 
 def draw_running(surface, game, state) -> None:
@@ -732,9 +833,23 @@ def draw_running(surface, game, state) -> None:
     # Jugador: siempre en la fila del frente (z=1), con su offset de salto.
     p = game.player
     pkey = _player_key(p)
+    if p.in_air:
+        run_bob = 0.0
+        run_sway = 0.0
+        run_scale_y = 1.0
+    else:
+        stride = math.sin(math.tau * _run_phase)
+        # Las seis poses ya contienen contacto, compresion e impulso. Este
+        # movimiento secundario es intencionalmente leve: evita el deslizamiento
+        # sin deformar el personaje ni competir con el flipbook.
+        run_bob = 2.0 * abs(math.sin(math.tau * _run_phase * 2.0))
+        run_sway = 1.25 * stride
+        run_scale_y = 1.0
     drawables.append((1.0, lambda s: draw_sprite(s, pkey, lane_of_player(p), 1.0,
-                                                  y_lift=p.jump_offset + PLAYER_DRAW_LIFT,
-                                                  rest_lift=PLAYER_DRAW_LIFT)))
+                                                  y_lift=p.jump_offset + PLAYER_DRAW_LIFT + run_bob,
+                                                  rest_lift=PLAYER_DRAW_LIFT,
+                                                  x_shift=run_sway,
+                                                  y_scale=run_scale_y)))
 
     # PDF perseguidor: en la sección inferior, DETRÁS del jugador y de los
     # obstáculos (persigue desde atrás). Se dibuja antes para que el cuadrado
@@ -745,6 +860,8 @@ def draw_running(surface, game, state) -> None:
     for _z, fn in drawables:
         fn(surface)
 
+    _draw_runner_dust(surface, game)
+    surface.blit(_get_vignette(), (0, 0))
     _draw_chaser_bar(surface, game.chaser)
     _draw_hud(surface, game, state)
     _draw_damage_flash(surface, game.hit_flash)   # tiñe toda la escena al chocar
@@ -760,7 +877,7 @@ def _draw_pdf(surface, game) -> None:
     y_bottom = config.SCREEN_HEIGHT - 4
     w = max(1, int(bw * scale))
     h = max(1, int(bh * scale))
-    img = pygame.transform.smoothscale(master, (w, h))
+    img = pygame.transform.scale(master, (w, h))
     surface.blit(img, (int(x - w / 2), int(y_bottom - h)))
 
 
@@ -1037,14 +1154,20 @@ def _draw_panel_feed(window, frame, feed_x: int, feed_y: int, feed_w: int) -> in
         feed_h = int(feed_w * fh / fw) if fw else int(feed_w * 3 / 4)
         img = pygame.transform.smoothscale(surf, (feed_w, feed_h))
         window.blit(img, (feed_x, feed_y))
+        pygame.draw.rect(window, config.COLOR_GOAL,
+                         (feed_x - 3, feed_y - 3, feed_w + 6, feed_h + 6),
+                         width=3, border_radius=10)
         pygame.draw.rect(window, config.COLOR_TEXT_DIM,
-                         (feed_x, feed_y, feed_w, feed_h), width=2, border_radius=8)
+                         (feed_x, feed_y, feed_w, feed_h), width=1, border_radius=8)
         return feed_y + feed_h
 
     # Sin cámara (modo teclado): caja placeholder 4:3 + aviso.
     feed_h = int(feed_w * 3 / 4)
     pygame.draw.rect(window, config.COLOR_PANEL_PLACEHOLDER,
                      (feed_x, feed_y, feed_w, feed_h), border_radius=8)
+    pygame.draw.rect(window, config.COLOR_GOAL,
+                     (feed_x - 3, feed_y - 3, feed_w + 6, feed_h + 6),
+                     width=3, border_radius=10)
     label = _font(22, bold=True).render("CAMARA OFF", True, config.COLOR_TEXT_DIM)
     window.blit(label, label.get_rect(center=(feed_x + feed_w // 2, feed_y + feed_h // 2)))
     return feed_y + feed_h
@@ -1073,7 +1196,24 @@ def draw_camera_panel(window, frame, cue) -> None:
 
     # --- Zona de pista, bajo el feed ---
     main_text, sub_text, color = cue
-    zone_top = feed_bottom + 48
+    normalized = main_text.upper()
+    if "SALTA" in normalized:
+        icon_key = "jump"
+    elif "MUEVETE" in normalized or "ALCANZO" in normalized:
+        icon_key = "dodge"
+    elif any(word in normalized for word in ("BRAZO", "CABEZA", "GANASTE", "AGUA")):
+        icon_key = "stretch"
+    else:
+        icon_key = "logo"
+
+    icon = visual_assets.load_icon(icon_key)
+    icon_size = 64
+    icon_y = feed_bottom + 16
+    if icon is not None:
+        image = pygame.transform.scale(icon, (icon_size, icon_size))
+        window.blit(image, image.get_rect(midtop=(cx, icon_y)))
+
+    zone_top = feed_bottom + 102
     text_max_w = panel_w - 2 * _PANEL_MARGIN   # margen a ambos lados: nunca se corta
 
     title = _render_fit(main_text, text_max_w, 48, color, bold=True)
@@ -1101,7 +1241,12 @@ def draw_intro(surface, seconds_left: int) -> None:
     veil.fill((14, 16, 22, 210))
     surface.blit(veil, (0, 0))
 
-    title = _render_fit(config.INTRO_TITLE, max_w, 44, config.COLOR_TEXT, bold=True)
+    logo = visual_assets.load_icon("logo")
+    if logo is not None:
+        mark = pygame.transform.scale(logo, (62, 62))
+        surface.blit(mark, mark.get_rect(center=(78, 118)))
+
+    title = _render_fit(config.INTRO_TITLE, max_w - 64, 44, config.COLOR_TEXT, bold=True)
     surface.blit(title, title.get_rect(center=(cx, 118)))
     sub = _render_fit(config.INTRO_SUBTITLE, max_w, 18, config.COLOR_TEXT_DIM)
     surface.blit(sub, sub.get_rect(center=(cx, 154)))
@@ -1136,3 +1281,13 @@ def draw_intro(surface, seconds_left: int) -> None:
     surface.blit(count, count.get_rect(center=(cx, config.SCREEN_HEIGHT - 128)))
     skip = _render_fit("(cualquier tecla para empezar ya)", max_w, 17, config.COLOR_TEXT_DIM)
     surface.blit(skip, skip.get_rect(center=(cx, config.SCREEN_HEIGHT - 96)))
+
+
+def draw_transition(surface, frames: int) -> None:
+    """Fundido de entrada corto al cambiar de estado, sin pausar gameplay."""
+    if frames <= 0 or config.TRANSITION_FRAMES <= 0:
+        return
+    ratio = min(1.0, frames / config.TRANSITION_FRAMES)
+    veil = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+    veil.fill((5, 8, 16, int(190 * ratio * ratio)))
+    surface.blit(veil, (0, 0))

@@ -14,7 +14,7 @@ from __future__ import annotations
 SCREEN_WIDTH: int = 540
 SCREEN_HEIGHT: int = 900
 FPS: int = 60
-CAPTION: str = "Office Runner — Día 1 (teclado)"
+CAPTION: str = "Office Runner — Pausa Activa"
 
 # Fuente de TODO el texto del juego. Lista de fallbacks multiplataforma (SysFont
 # acepta nombres separados por coma): Consolas solo existe en Windows; en macOS
@@ -27,6 +27,10 @@ FONT_NAMES: str = "consolas,menlo,monaco,dejavusansmono,couriernew"
 # quede cerca del alto de la pantalla sin cortarse (ni tocar project()).
 WINDOW_FIT_MARGIN: float = 0.92   # fracción del alto/ancho del monitor a ocupar
 WINDOW_MAX_SCALE: float = 2.0     # tope de escala (evita gigantismo en 4K)
+
+# Fundido corto al cambiar de estado. Es solo presentacion: no pausa ni altera
+# la maquina de estados o la fisica.
+TRANSITION_FRAMES: int = 14
 
 # --- Carriles ---
 LANE_COUNT: int = 3
